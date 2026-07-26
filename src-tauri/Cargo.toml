@@ -1,0 +1,29 @@
+[package]
+name = "micpy"
+version = "2.1.0"
+description = "Minimalistic Android Mic Streamer"
+authors = ["micpy"]
+edition = "2021"
+
+[lib]
+name = "micpy_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+reqwest = { version = "0.13.4", features = ["blocking", "json"] }
+zip = "2"
+dirs = "6.0.0"
+windows = { version = "0.62", features = [
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Foundation",
+] }
