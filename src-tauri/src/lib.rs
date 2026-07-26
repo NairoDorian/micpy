@@ -101,6 +101,8 @@ pub struct ScrcpyOptions {
     pub audio_buffer: u32,
     pub audio_codec: String,  // "raw", "opus", "aac", "flac"
     pub audio_source: String, // "mic", "mic-voice-communication", etc.
+    pub audio_bit_rate: u32,
+    pub audio_output_buffer: u32,
     pub output_device: Option<String>, // Windows MMDevice friendly name; consumed by device_routing, not passed to scrcpy.
     pub scrcpy_path: Option<String>,
     pub extra_args: Option<String>,
@@ -174,6 +176,8 @@ fn build_scrcpy_args(opts: &ScrcpyOptions) -> Vec<String> {
 
     // ── Audio ──
     args.push(format!("--audio-buffer={}", opts.audio_buffer));
+    args.push(format!("--audio-bit-rate={}", opts.audio_bit_rate));
+    args.push(format!("--audio-output-buffer={}", opts.audio_output_buffer));
     args.push(format!("--audio-codec={}", opts.audio_codec));
     args.push(format!("--audio-source={}", opts.audio_source));
 

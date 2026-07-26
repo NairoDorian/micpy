@@ -24,6 +24,8 @@ const DEFAULT_OPTIONS: ScrcpyOptions = {
   device_target: '192.168.0.111:5555',
   no_window: true,
   audio_buffer: 10,
+  audio_bit_rate: 128000,
+  audio_output_buffer: 10,
   audio_codec: 'raw',
   audio_source: 'mic',
   scrcpy_path: '',

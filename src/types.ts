@@ -58,6 +58,10 @@ export interface ScrcpyOptions {
   audio_codec: AudioCodec;
   /** Audio source (`--audio-source=source`). */
   audio_source: AudioSource;
+  /** Audio bit rate in bits per second (`--audio-bit-rate=N`). Default: 128000 (128 Kbps). */
+  audio_bit_rate: number;
+  /** Audio output buffer size in milliseconds (`--audio-output-buffer=N`). Default: 10. */
+  audio_output_buffer: number;
   /** Windows audio output device name for the scrcpy process mixer routing.
    * When set, the Rust backend routes *only* the scrcpy process's audio to
    * this device via the WinRT AudioPolicyConfig API + registry policies,

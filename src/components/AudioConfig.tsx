@@ -146,6 +146,36 @@ export const AudioConfig: React.FC<AudioConfigProps> = ({ options, onChangeOptio
 
       <div className="grid-2" style={{ gap: '6px', marginBottom: '6px' }}>
         <div>
+          <span className="form-label" style={{ marginBottom: '2px', fontSize: '9px' }}>Bit Rate</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <input
+              type="number" min={32} max={320} step={1}
+              value={options.audio_bit_rate}
+              onChange={(e) => onChangeOption('audio_bit_rate', Number(e.target.value))}
+              style={{ width: '60px', fontSize: '10px', padding: '2px 4px' }}
+              aria-label="Audio bit rate in bps"
+            />
+            <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>bps</span>
+          </div>
+        </div>
+
+        <div>
+          <div className="flex-between" style={{ marginBottom: '2px' }}>
+            <span className="form-label" style={{ marginBottom: 0, fontSize: '9px' }}>Output Buffer</span>
+            <span style={{ fontSize: '10px', color: '#00e5ff', fontWeight: 600 }}>{options.audio_output_buffer}ms</span>
+          </div>
+          <input
+            type="range" min={5} max={100} step={5}
+            value={options.audio_output_buffer}
+            onChange={(e) => onChangeOption('audio_output_buffer', Number(e.target.value))}
+            style={{ width: '100%' }}
+            aria-label="Audio output buffer"
+          />
+        </div>
+      </div>
+
+      <div className="grid-2" style={{ gap: '6px', marginBottom: '6px' }}>
+        <div>
           <div className="flex-between" style={{ marginBottom: '2px' }}>
             <span className="form-label" style={{ marginBottom: 0, fontSize: '9px' }}>Buffer</span>
             <span style={{ fontSize: '10px', color: '#00e5ff', fontWeight: 600 }}>{options.audio_buffer}ms</span>
