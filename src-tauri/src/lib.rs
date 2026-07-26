@@ -893,7 +893,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
-            // Hide the window instead of closing it when the user clicks X
+// Hide the window instead of closing it when the user clicks X
             tauri::RunEvent::WindowEvent {
                 label,
                 event: tauri::WindowEvent::CloseRequested { api, .. },
@@ -904,7 +904,47 @@ pub fn run() {
                     api.prevent_close();
                 }
             }
-tauri::RunEvent::ExitRequested { .. } => {
+            // Maintain aspect ratio on resize — grow/shrink both dimensions based on drag axis
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Resized(size),
+                ..
+            } => {
+                const ASPECT_NUM: f64 = 2.0;
+                const ASPECT_DEN: f64 = 1.0;
+                const MIN_W: u32 = 720;
+                const MIN_H: u32 = 360;
+
+                static PREV_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(MIN_W);
+                static PREV_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(MIN_H);
+
+                let w = size.width;
+                let h = size.height;
+                let prev_w = PREV_W.load(std::sync::atomic::Ordering::Relaxed);
+                let prev_h = PREV_H.load(std::sync::atomic::Ordering::Relaxed);
+                PREV_W.store(w, std::sync::atomic::Ordering::Relaxed);
+                PREV_H.store(h, std::sync::atomic::Ordering::Relaxed);
+
+                let dw = w.abs_diff(prev_w);
+                let dh = h.abs_diff(prev_h);
+
+                if dw >= dh {
+                    let h_from_w = ((w as f64) * ASPECT_DEN / ASPECT_NUM).round() as u32;
+                    if h_from_w.abs_diff(h) > 2 {
+                        if let Some(window) = app_handle.get_webview_window(&label) {
+                            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(w, h_from_w)));
+                        }
+                    }
+                } else {
+                    let w_from_h = ((h as f64) * ASPECT_NUM / ASPECT_DEN).round() as u32;
+                    if w_from_h.abs_diff(w) > 2 {
+                        if let Some(window) = app_handle.get_webview_window(&label) {
+                            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(w_from_h, h)));
+                        }
+                    }
+                }
+}
+            tauri::RunEvent::ExitRequested { .. } => {
                   let state = app_handle.state::<AppState>();
                   if let Ok(mut lock) = state.process.lock() {
                       if let Some(mut child) = lock.take() {

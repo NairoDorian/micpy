@@ -226,7 +226,7 @@ body {
 .log-body {
   flex: 1;
   min-height: 0;
-  max-height: calc(var(--base-h) / 2);
+  max-height: calc(var(--base-h) / 8);
   background-color: var(--bg-terminal);
   border: 1px solid var(--border-color);
   border-radius: var(--radius);

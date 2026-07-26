@@ -850,7 +850,7 @@ and surface the failure through a returned `error` flag rather than discarding i
 .log-body {
   flex: 1;
   min-height: 30px;
-  max-height: 65px;      /* ← */
+  max-height: 40px;      /* ← */
   padding: 2px 4px;      /* ← dead: overridden 6 lines later */
   /* ... */
   padding: 4px 6px;
