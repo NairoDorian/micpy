@@ -80,7 +80,7 @@ fn get_version(path: &PathBuf) -> String {
 }
 
 pub fn get_target_dir() -> Option<PathBuf> {
-    portable_dir().or_else(managed_dir)
+    portable_dir().filter(|d| crate::utils::is_writable(d)).or_else(managed_dir)
 }
 
 pub fn get_adb_path() -> Option<std::path::PathBuf> {
@@ -112,11 +112,13 @@ pub fn ensure_adb() -> Result<AdbStatus, String> {
     std::fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create directory {:?}: {}", target_dir, e))?;
 
     let zip_name = "platform-tools-latest-windows.zip";
-    let zip_path = target_dir.parent().unwrap_or(&target_dir).join(zip_name);
+    let staging_dir = std::env::temp_dir().join("micpy");
+    std::fs::create_dir_all(&staging_dir).map_err(|e| format!("Failed to create staging directory {:?}: {}", staging_dir, e))?;
+    let zip_path = staging_dir.join(zip_name);
 
     crate::utils::download_file(PLATFORM_TOOLS_URL, &zip_path)?;
     crate::utils::extract_zip(&zip_path, &target_dir, 1)?;
-    crate::utils::remove_all(&zip_path)?;
+    std::fs::remove_file(&zip_path).map_err(|e| format!("Failed to remove staging zip {:?}: {}", zip_path, e))?;
 
     Ok(find_adb())
 }
@@ -171,11 +173,18 @@ pub fn connect_wireless(ip_port: &str, adb_path: Option<&str>) -> Result<String,
         cmd.arg("connect").arg(ip_port).output()
     }.map_err(|e| format!("Failed to execute adb connect: {}", e))?;
 
-    let result = String::from_utf8_lossy(&output.stdout).to_string();
-    if output.status.success() {
-        Ok(result.trim().to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr).to_lowercase();
+    let failed = combined.contains("failed to connect")
+        || combined.contains("unable to connect")
+        || combined.contains("cannot connect")
+        || combined.contains("connection refused");
+    let result = stdout.trim().to_string();
+    if output.status.success() && !failed {
+        Ok(result)
     } else {
-        Err(result.trim().to_string())
+        Err(if result.is_empty() { stderr.trim().to_string() } else { result })
     }
 }
 

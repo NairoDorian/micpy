@@ -7,13 +7,14 @@ use windows::Win32::Media::Audio::{
     eRender, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
     MMDeviceEnumerator, DEVICE_STATE_ACTIVE, EDataFlow,
 };
-use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, CoInitializeEx, COINIT_APARTMENTTHREADED, CoUninitialize};
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 use windows::core::{Interface, GUID};
+use crate::com::ComApartment;
 
 /// Sets the master volume and mute state for every audio session owned by pid.
 pub fn set_scrcpy_volume(pid: u32, volume: f32, mute: bool) -> Result<(), String> {
     let volume = volume.clamp(0.0, 1.0);
-    unsafe { let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); }
+    let _com = ComApartment::init_mta()?;
 
     let enumerator: IMMDeviceEnumerator = unsafe {
         CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
@@ -51,8 +52,6 @@ pub fn set_scrcpy_volume(pid: u32, volume: f32, mute: bool) -> Result<(), String
             }
         }
     }
-
-    unsafe { CoUninitialize(); }
 
     if found == 0 { Err(last_err.unwrap_or_else(|| format!("No audio session found for PID {}", pid))) } else { Ok(()) }
 }

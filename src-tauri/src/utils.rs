@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
+#[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 
 pub fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
@@ -47,19 +48,13 @@ pub fn extract_zip(zip_path: &PathBuf, target_dir: &PathBuf, strip_prefix: usize
             .by_index(i)
             .map_err(|e| format!("Failed to read zip entry {}: {}", i, e))?;
 
-        let Some(safe) = entry.enclosed_name() else {
-            return Err(format!("zip entry {} has an unsafe path", i));
-        };
-
+        let safe = entry.enclosed_name().ok_or_else(|| format!("zip entry {} has an unsafe path", i))?;
         let stripped: PathBuf = safe.components().skip(strip_prefix).collect();
         if stripped.as_os_str().is_empty() { continue; }
-        let out_path = target_dir.join(&stripped);
-
-        let canon_target = target_dir.canonicalize()
-            .map_err(|e| format!("Failed to canonicalize target dir: {}", e))?;
-        if !out_path.starts_with(&canon_target) {
+        if stripped.components().any(|c| !matches!(c, Component::Normal(_))) {
             return Err(format!("zip entry {} escapes the target directory", i));
         }
+        let out_path = target_dir.join(&stripped);
 
         if entry.is_dir() {
             std::fs::create_dir_all(&out_path)
@@ -88,4 +83,16 @@ pub fn remove_all(path: &PathBuf) -> Result<(), String> {
             .map_err(|e| format!("Failed to remove file {:?}: {}", path, e))?;
     }
     Ok(())
+}
+
+/// Check whether a directory exists and is writable by attempting to
+/// create a probe file inside it and immediately deleting it.
+pub fn is_writable(dir: &PathBuf) -> bool {
+    let probe = dir.join(".micpy-write-test");
+    std::fs::create_dir_all(dir).is_ok()
+        && std::fs::write(&probe, b"").is_ok()
+        && {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
 }

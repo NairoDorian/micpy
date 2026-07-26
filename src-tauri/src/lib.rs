@@ -12,6 +12,7 @@ mod audio_routing;
 mod volume_control;
 mod device_routing;
 mod utils;
+mod com;
 
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
@@ -176,7 +177,9 @@ fn build_scrcpy_args(opts: &ScrcpyOptions) -> Vec<String> {
 
     // ── Audio ──
     args.push(format!("--audio-buffer={}", opts.audio_buffer));
-    args.push(format!("--audio-bit-rate={}", opts.audio_bit_rate));
+    if opts.audio_codec != "raw" && opts.audio_codec != "flac" {
+        args.push(format!("--audio-bit-rate={}", opts.audio_bit_rate));
+    }
     args.push(format!("--audio-output-buffer={}", opts.audio_output_buffer));
     args.push(format!("--audio-codec={}", opts.audio_codec));
     args.push(format!("--audio-source={}", opts.audio_source));
@@ -384,93 +387,92 @@ pub mod commands {
         let show_all = show_all.unwrap_or(false);
         #[cfg(target_os = "windows")]
         {
+            let _com = crate::com::ComApartment::init()?;
+
             use windows::Win32::Media::Audio::{
                 DEVICE_STATE, DEVICE_STATE_ACTIVE, DEVICE_STATE_DISABLED,
-                DEVICE_STATE_NOTPRESENT, DEVICE_STATE_UNPLUGGED, EDataFlow,
-                IMMDeviceEnumerator,
+                DEVICE_STATE_NOTPRESENT, DEVICE_STATE_UNPLUGGED, eRender, EDataFlow,
+                IMMDeviceEnumerator, MMDeviceEnumerator,
             };
             use windows::Win32::System::Com::{
-                CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance,
-                CoInitializeEx, STGM_READ,
+                CLSCTX_INPROC_SERVER, CoCreateInstance, STGM_READ,
             };
             use windows::Win32::System::Variant::VARENUM;
             use windows::Win32::Foundation::PROPERTYKEY;
             use windows::core::GUID;
 
-            unsafe {
-                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+             let enumerator: IMMDeviceEnumerator = unsafe {
+                 CoCreateInstance(
+                     &MMDeviceEnumerator,
+                     None,
+                     CLSCTX_INPROC_SERVER,
+                 )
+             }.map_err(|e| format!("MMDeviceEnumerator: {}", e))?;
 
-                let mmdevice_clsid = GUID::try_from("BCDE0395-E52F-467C-8E3D-C4579291692E").unwrap();
-                let enumerator: IMMDeviceEnumerator = CoCreateInstance(
-                    &mmdevice_clsid as *const _,
-                    None,
-                    CLSCTX_INPROC_SERVER,
-                ).map_err(|e| format!("MMDeviceEnumerator: {}", e))?;
+             let state_mask = if show_all {
+                 DEVICE_STATE(
+                     DEVICE_STATE_ACTIVE.0
+                         | DEVICE_STATE_DISABLED.0
+                         | DEVICE_STATE_NOTPRESENT.0
+                         | DEVICE_STATE_UNPLUGGED.0
+                 )
+             } else {
+                 DEVICE_STATE_ACTIVE
+             };
 
-                let state_mask = if show_all {
-                    DEVICE_STATE(
-                        DEVICE_STATE_ACTIVE.0
-                            | DEVICE_STATE_DISABLED.0
-                            | DEVICE_STATE_NOTPRESENT.0
-                            | DEVICE_STATE_UNPLUGGED.0
-                    )
-                } else {
-                    DEVICE_STATE_ACTIVE
-                };
+             let collection = unsafe {
+                 enumerator
+                     .EnumAudioEndpoints(EDataFlow(eRender.0), state_mask)
+             }.map_err(|e| format!("EnumAudioEndpoints: {}", e))?;
 
-                let collection = enumerator
-                    .EnumAudioEndpoints(EDataFlow(0), state_mask)
-                    .map_err(|e| format!("EnumAudioEndpoints: {}", e))?;
+             let count = unsafe {
+                 collection.GetCount()
+             }.map_err(|e| format!("GetCount: {}", e))?;
 
-                let count = collection
-                    .GetCount()
-                    .map_err(|e| format!("GetCount: {}", e))?;
+             let mut devices: Vec<String> = Vec::new();
+             let mut seen = std::collections::HashSet::<String>::new();
+             let fmtid = GUID::try_from("a45c254e-df1c-4efd-8020-67d146a850e0").unwrap();
+             let key_name = PROPERTYKEY { fmtid, pid: 14 };
+             let key_desc = PROPERTYKEY { fmtid, pid: 2 };
 
-                let mut devices: Vec<String> = Vec::new();
-                let mut seen = std::collections::HashSet::<String>::new();
-                let fmtid = GUID::try_from("a45c254e-df1c-4efd-8020-67d146a850e0").unwrap();
-                let key_name = PROPERTYKEY { fmtid, pid: 14 };
-                let key_desc = PROPERTYKEY { fmtid, pid: 2 };
+             for i in 0..count {
+                 let device = unsafe { collection.Item(i) }
+                     .map_err(|e| format!("Item({}): {}", i, e))?;
 
-                for i in 0..count {
-                    let device = collection.Item(i)
-                        .map_err(|e| format!("Item({}): {}", i, e))?;
+                 let store = unsafe {
+                     device.OpenPropertyStore(STGM_READ)
+                 }.map_err(|e| format!("OpenPropertyStore: {}", e))?;
 
-                    let store = device
-                        .OpenPropertyStore(STGM_READ)
-                        .map_err(|e| format!("OpenPropertyStore: {}", e))?;
+                 let mut ep_name = String::new();
+                 if let Ok(pv) = unsafe { store.GetValue(&key_name as *const PROPERTYKEY) } {
+let vt = unsafe { pv.Anonymous.Anonymous.vt };
+                      if vt == VARENUM(31) {
+                          let s = unsafe { pv.Anonymous.Anonymous.Anonymous.pwszVal.to_string().unwrap_or_default() };
+                          if !s.is_empty() { ep_name = s; }
+                      }
+                  }
 
-                    let mut ep_name = String::new();
-                    if let Ok(pv) = store.GetValue(&key_name as *const PROPERTYKEY) {
-                        let vt = pv.Anonymous.Anonymous.vt;
-                        if vt == VARENUM(31) {
-                            let s = pv.Anonymous.Anonymous.Anonymous.pwszVal.to_string().unwrap_or_default();
-                            if !s.is_empty() { ep_name = s; }
-                        }
-                    }
+                  let mut dev_desc = String::new();
+                  if let Ok(pv) = unsafe { store.GetValue(&key_desc as *const PROPERTYKEY) } {
+                      let vt = unsafe { pv.Anonymous.Anonymous.vt };
+                      if vt == VARENUM(31) {
+                          let s = unsafe { pv.Anonymous.Anonymous.Anonymous.pwszVal.to_string().unwrap_or_default() };
+                         if !s.is_empty() { dev_desc = s; }
+                     }
+                 }
 
-                    let mut dev_desc = String::new();
-                    if let Ok(pv) = store.GetValue(&key_desc as *const PROPERTYKEY) {
-                        let vt = pv.Anonymous.Anonymous.vt;
-                        if vt == VARENUM(31) {
-                            let s = pv.Anonymous.Anonymous.Anonymous.pwszVal.to_string().unwrap_or_default();
-                            if !s.is_empty() { dev_desc = s; }
-                        }
-                    }
+                 let name = if !dev_desc.is_empty() && dev_desc != ep_name {
+                     format!("{} ({})", ep_name, dev_desc)
+                 } else {
+                     ep_name.clone()
+                 };
 
-                    let name = if !dev_desc.is_empty() && dev_desc != ep_name {
-                        format!("{} ({})", ep_name, dev_desc)
-                    } else {
-                        ep_name.clone()
-                    };
+                 if !name.is_empty() && seen.insert(name.clone()) {
+                     devices.push(name);
+                 }
+             }
 
-                    if !name.is_empty() && seen.insert(name.clone()) {
-                        devices.push(name);
-                    }
-                }
-
-                Ok(devices)
-            }
+             Ok(devices)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -602,16 +604,20 @@ let (pid, proc_path) = {
         if let Some(stdout) = child.stdout.take() {
             let app_handle = app.clone();
             std::thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines().flatten() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("[server]")
-                        || trimmed.starts_with("INFO:")
-                        || trimmed.starts_with(" * ")
-                        || trimmed.starts_with("No video playback")
-                        || trimmed.starts_with("ADB device found:")
-                    { continue; }
-                    emit_log(&app_handle, "stdout", line);
+                let mut reader = BufReader::new(stdout);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match reader.read_until(b'\n', &mut buf) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let line = String::from_utf8_lossy(&buf);
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() { continue; }
+                            emit_log(&app_handle, classify_scrcpy_log(&line), line.trim_end().to_string());
+                        }
+                        Err(_) => break,
+                    }
                 }
             });
         }
@@ -619,9 +625,19 @@ let (pid, proc_path) = {
         if let Some(stderr) = child.stderr.take() {
             let app_handle = app.clone();
             std::thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().flatten() {
-                    emit_log(&app_handle, "info", line);
+                let mut reader = BufReader::new(stderr);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match reader.read_until(b'\n', &mut buf) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let line = String::from_utf8_lossy(&buf);
+                            if line.trim().is_empty() { continue; }
+                            emit_log(&app_handle, classify_scrcpy_log(&line), line.trim_end().to_string());
+                        }
+                        Err(_) => break,
+                    }
                 }
             });
         }
@@ -633,6 +649,53 @@ let (pid, proc_path) = {
                 .lock()
                 .map_err(|_| "Failed to acquire lock on process state")?;
             *lock = Some(child);
+        }
+
+        // Phase 7: Reaper thread — detect when scrcpy exits on its own
+        {
+            let child_pid = pid;
+            let process = state.process.clone();
+            let stream_pid = state.stream_pid.clone();
+            let stream_path = state.stream_path.clone();
+            let app_handle = app.clone();
+            std::thread::spawn(move || {
+                loop {
+                    {
+                        let lock = process.lock().ok();
+                        if lock.as_ref().and_then(|l| l.as_ref()).map(|c| c.id()).unwrap_or(0) != child_pid {
+                            break;
+                        }
+                    }
+                    {
+                        let mut lock = process.lock().ok();
+                        match lock.as_deref_mut().and_then(|opt| opt.as_mut()) {
+                            Some(c) => match c.try_wait() {
+                                Ok(Some(_)) => {
+                                    let _ = lock.take();
+                                    break;
+                                }
+                                Ok(None) => {}
+                                Err(_) => {
+                                    let _ = lock.take();
+                                    break;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                if let Ok(mut pid_lock) = stream_pid.lock() {
+                    if *pid_lock != Some(child_pid) { return; }
+                    *pid_lock = None;
+                }
+                if let Ok(mut path_lock) = stream_path.lock() {
+                    *path_lock = None;
+                }
+                emit_log(&app_handle, "error", format!("scrcpy process (PID {}) exited", child_pid));
+                emit_event(&app_handle, "stream-status-changed", false);
+                update_tray(&app_handle);
+            });
         }
 
         emit_event(&app, "stream-status-changed", true);
@@ -658,6 +721,10 @@ let (pid, proc_path) = {
 
                 *state.stream_pid.lock().map_err(|_| "lock")? = None;
                 *state.stream_path.lock().map_err(|_| "lock")? = None;
+
+                // Reset routing registry keys so scrcpy doesn't continue
+                // redirecting audio after the stream stops.
+                let _ = device_routing::remove_scrcpy_registry_keys();
 
                 emit_event(&app, "stream-status-changed", false);
                 Ok(format!("scrcpy stream (PID {}) stopped.", pid))
@@ -707,16 +774,34 @@ let (pid, proc_path) = {
 
     // ── Internal Helpers ──────────────────────────────────────────────
 
-    /// Emits a log event to the frontend.
-    fn emit_log(app: &AppHandle, stream: &str, text: String) {
-        let _ = app.emit(
-            "scrcpy-log",
-            LogPayload {
-                stream: stream.to_string(),
-                text,
-            },
-        );
+/// Classify a scrcpy log line by its prefix into the appropriate stream label.
+fn classify_scrcpy_log(line: &str) -> &'static str {
+    let t = line.trim_start();
+    if t.starts_with("ERROR:") {
+        "error"
+    } else if t.starts_with("WARN:") {
+        "stderr"
+    } else if t.starts_with("INFO:")
+        || t.starts_with("DEBUG:")
+        || t.starts_with("VERBOSE:")
+        || t.starts_with("[server]")
+    {
+        "info"
+    } else {
+        "stdout"
     }
+}
+
+/// Emit a log event to the frontend, classifying scrcpy output correctly.
+fn emit_log(app: &AppHandle, stream: &str, text: String) {
+    let _ = app.emit(
+        "scrcpy-log",
+        LogPayload {
+            stream: stream.to_string(),
+            text,
+        },
+    );
+}
 
     /// Emits a generic event to the frontend.
     fn emit_event<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
@@ -819,46 +904,26 @@ pub fn run() {
                     api.prevent_close();
                 }
             }
-            // Maintain aspect ratio on resize — grow/shrink both dimensions based on drag axis
-            tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::Resized(size),
-                ..
-            } => {
-                const ASPECT_NUM: f64 = 2.0;
-                const ASPECT_DEN: f64 = 1.0;
-                const MIN_W: u32 = 720;
-                const MIN_H: u32 = 360;
-
-                static PREV_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(MIN_W);
-                static PREV_H: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(MIN_H);
-
-                let w = size.width;
-                let h = size.height;
-                let prev_w = PREV_W.load(std::sync::atomic::Ordering::Relaxed);
-                let prev_h = PREV_H.load(std::sync::atomic::Ordering::Relaxed);
-                PREV_W.store(w, std::sync::atomic::Ordering::Relaxed);
-                PREV_H.store(h, std::sync::atomic::Ordering::Relaxed);
-
-                let dw = w.abs_diff(prev_w);
-                let dh = h.abs_diff(prev_h);
-
-                if dw >= dh {
-                    let h_from_w = ((w as f64) * ASPECT_DEN / ASPECT_NUM).round() as u32;
-                    if h_from_w.abs_diff(h) > 2 {
-                        if let Some(window) = app_handle.get_webview_window(&label) {
-                            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(w, h_from_w)));
-                        }
-                    }
-                } else {
-                    let w_from_h = ((h as f64) * ASPECT_NUM / ASPECT_DEN).round() as u32;
-                    if w_from_h.abs_diff(w) > 2 {
-                        if let Some(window) = app_handle.get_webview_window(&label) {
-                            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(w_from_h, h)));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        });
+tauri::RunEvent::ExitRequested { .. } => {
+                  let state = app_handle.state::<AppState>();
+                  if let Ok(mut lock) = state.process.lock() {
+                      if let Some(mut child) = lock.take() {
+                          let _ = child.kill();
+                          let _ = child.wait();
+                      }
+                  }
+                  let _ = device_routing::remove_scrcpy_registry_keys();
+              }
+              tauri::RunEvent::Exit => {
+                  let state = app_handle.state::<AppState>();
+                  if let Ok(mut lock) = state.process.lock() {
+                      if let Some(mut child) = lock.take() {
+                          let _ = child.kill();
+                          let _ = child.wait();
+                      }
+                  }
+                  let _ = device_routing::remove_scrcpy_registry_keys();
+              }
+_ => {}
+          });
 }

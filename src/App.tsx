@@ -20,10 +20,10 @@ import './App.css';
 const MIN_WIDTH = 720;
 const MIN_HEIGHT = 360;
 const DEFAULT_OPTIONS: ScrcpyOptions = {
-  connection_type: 'wireless',
-  device_target: '192.168.0.111:5555',
+  connection_type: 'usb',
+  device_target: '',
   no_window: true,
-  audio_buffer: 10,
+  audio_buffer: 50,
   audio_bit_rate: 128000,
   audio_output_buffer: 10,
   audio_codec: 'raw',

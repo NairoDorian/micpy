@@ -16,10 +16,11 @@ use windows::Win32::Media::Audio::{
     eRender, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
     MMDeviceEnumerator, DEVICE_STATE_ACTIVE, EDataFlow,
 };
-use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, CoInitializeEx, COINIT_APARTMENTTHREADED, CoTaskMemFree, STGM_READ};
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, CoTaskMemFree, STGM_READ};
 use windows::Win32::System::Variant::VARENUM;
 use windows::Win32::Foundation::PROPERTYKEY;
 use windows::core::GUID;
+use crate::com::ComApartment;
 
 extern "system" {
     fn RegCreateKeyExW(
@@ -33,7 +34,6 @@ extern "system" {
         lpData: *const u8, cbData: u32,
     ) -> i32;
     fn RegDeleteTreeW(hkey: *mut std::ffi::c_void, lpSubKey: *const u16) -> i32;
-    fn CoUninitialize();
 }
 
 const HKEY_CURRENT_USER: *mut std::ffi::c_void = -2_147_483_647isize as *mut _;
@@ -59,9 +59,7 @@ const PKEY_FMTID: &str = "a45c254e-df1c-4efd-8020-67d146a850e0";
 /// - Writes the routing to the registry via [`write_device_registry`]
 /// - Applies the policy immediately via [`apply_swd_routing_int`]
 pub fn route_scrcpy_audio(pid: u32, proc_path: &str, device_name: &str) -> Result<String, String> {
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    }
+    let _com = ComApartment::init()?;
 
     let is_default = device_name.is_empty()
         || device_name.eq_ignore_ascii_case("Default")
@@ -70,14 +68,12 @@ pub fn route_scrcpy_audio(pid: u32, proc_path: &str, device_name: &str) -> Resul
     if is_default {
         let _ = remove_scrcpy_registry_keys();
         let _ = apply_swd_routing_int(pid, "");
-        unsafe { CoUninitialize(); }
         return Ok("Reset scrcpy output device to Windows Default".to_string());
     }
 
     let swd_path = resolve_device_swd(device_name)?;
     write_device_registry(proc_path, &swd_path)?;
     apply_swd_routing_int(pid, &swd_path)?;
-    unsafe { CoUninitialize(); }
 
     Ok(format!("Assigned scrcpy output device to '{}'", device_name))
 }
@@ -250,7 +246,7 @@ fn write_device_registry(proc_path: &str, swd_path: &str) -> Result<(), String> 
 }
 
 /// Removes the `scrcpy_0` and `scrcpy_1` registry subtrees to reset to default.
-fn remove_scrcpy_registry_keys() -> Result<(), String> {
+pub fn remove_scrcpy_registry_keys() -> Result<(), String> {
     const ERROR_FILE_NOT_FOUND: i32 = 2;
     for subkey in &["scrcpy_0", "scrcpy_1"] {
         let full = format!("{}\\{}", REG_DEFAULT_ENDPOINT, subkey);

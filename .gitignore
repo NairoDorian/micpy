@@ -5,6 +5,10 @@ dist/
 .DS_Store
 Thumbs.db
 adb/
+scrcpy/
+platform-tools*.zip
+scrcpy-win64*.zip
+*.exe
 stdin
 stdout
 *.csv

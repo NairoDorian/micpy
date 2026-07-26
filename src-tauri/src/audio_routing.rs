@@ -1,14 +1,14 @@
-//! audio_routing �?" Windows WinRT per-app audio endpoint routing.
+//! audio_routing — Windows WinRT per-app audio endpoint routing.
 //!
 //! Uses the undocumented `Windows.Media.Internal.AudioPolicyConfig` WinRT API
 //! to set the default audio endpoint for a specific process and audio role.
 //! This replaces the older SoundVolumeView.exe approach.
 
-use std::mem::forget;
-
 use windows::core::GUID;
 
-// �"?�"? WinRT Function Pointer �"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?
+// ──────────────────────────────────────────────────────────────────────
+// WinRT Function Pointer Types
+// ──────────────────────────────────────────────────────────────────────
 
 /// VTable slot signature for `SetPersistedDefaultAudioEndpoint`.
 ///
@@ -17,7 +17,9 @@ type SetDefaultEndpointFn = unsafe extern "system" fn(
     *mut std::ffi::c_void, u32, i32, i32, *mut std::ffi::c_void,
 ) -> i32;
 
-// �"?�"? WinRT P/Invoke Declarations �"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?
+// ──────────────────────────────────────────────────────────────────────
+// WinRT P/Invoke Declarations
+// ──────────────────────────────────────────────────────────────────────
 
 extern "system" {
     fn RoGetActivationFactory(
@@ -37,7 +39,9 @@ extern "system" {
     ) -> i32;
 }
 
-// �"?�"? HSTRING Helpers �"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?
+// ──────────────────────────────────────────────────────────────────────
+// HSTRING Helpers
+// ──────────────────────────────────────────────────────────────────────
 
 /// Converts a Rust `&str` into a WinRT `HSTRING` (heap-allocated).
 /// Returns the raw pointer (caller must call `delete_hstring`).
@@ -84,10 +88,10 @@ impl Drop for FactoryGuard {
 /// Routes audio for a given process (`pid`) to a specific audio endpoint device.
 ///
 /// # Arguments
-/// * `pid`      �?" Target process ID.
-/// * `flow`     �?" Data flow direction (0 = render, 1 = capture, etc.).
-/// * `role`     �?" Audio role (0 = Console, 1 = Multimedia, 2 = Communications).
-/// * `device_id` �?" SWD (Software Device) path of the target audio endpoint.
+/// * `pid`      - Target process ID.
+/// * `flow`     - Data flow direction (0 = render, 1 = capture, etc.).
+/// * `role`     - Audio role (0 = Console, 1 = Multimedia, 2 = Communications).
+/// * `device_id` - SWD (Software Device) path of the target audio endpoint.
 ///
 /// Internally activates the undocumented `AudioPolicyConfig` WinRT class via
 /// `RoGetActivationFactory` and calls `SetPersistedDefaultAudioEndpoint` at
@@ -105,7 +109,7 @@ pub fn set_app_default_endpoint(
 
     let class_hstr = make_hstring("Windows.Media.Internal.AudioPolicyConfig")?;
 
-    // Activate the factory �?" retry with older IID if the first attempt fails.
+    // Activate the factory - retry with older IID if the first attempt fails.
     let guard = unsafe {
         let mut f: *mut std::ffi::c_void = std::ptr::null_mut();
         let mut hr = RoGetActivationFactory(class_hstr, &iid_21h2, &mut f);
@@ -137,12 +141,6 @@ pub fn set_app_default_endpoint(
         }
     };
 
-    // The guard releases the factory on drop.  Prevent the guard from
-    // running its Drop impl here because the Release call has already
-    // been made inside the unsafe block above via the vtable slot 2.
-    // Actually, the guard's Drop calls IUnknown::Release — we want it
-    // to happen exactly once.  The original code called Release explicitly;
-    // the guard replaces that pattern so leaks are impossible on early returns.
-    forget(guard);
+    // FactoryGuard releases the factory on drop, including on early returns.
     result
 }
