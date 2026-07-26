@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Audio bit rate** (`--audio-bit-rate`) — configurable audio bitrate in bits per second (default: 128000)
+- **Audio output buffer** (`--audio-output-buffer`) — configurable audio output buffer in milliseconds (default: 10)
+
 ### Fixed
 - **Zip Slip (SEC-02)** - `utils.rs::extract_zip` now uses `entry.enclosed_name()` with path containment validation, rejecting entries with `../` traversal or absolute paths
 - **CSP (SEC-04)** - `tauri.conf.json` now enforces a restrictive Content Security Policy instead of `null`
