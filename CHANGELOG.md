@@ -12,15 +12,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Audio bit rate** (`--audio-bit-rate`) — configurable audio bitrate in bits per second (default: 128000)
 - **Audio output buffer** (`--audio-output-buffer`) — configurable audio output buffer in milliseconds (default: 10)
+- **SAR virtual microphone** — creates a virtual audio device with a custom name on Windows using the SynchronousAudioRouter kernel driver. A Rust transport loop (`sar_bridge.rs`) bridges scrcpy's output to the virtual mic, replacing the ASIO Bridge + DAW requirement. Four new Tauri commands: `check_sar_available`, `create_virtual_mic`, `stop_virtual_mic`, `get_virtual_mic_status`.
 
 ### Fixed
 - **Zip Slip (SEC-02)** - `utils.rs::extract_zip` now uses `entry.enclosed_name()` with path containment validation, rejecting entries with `../` traversal or absolute paths
 - **CSP (SEC-04)** - `tauri.conf.json` now enforces a restrictive Content Security Policy instead of `null`
 - **Console window flash (PERF-02)** - `adb_manager.rs` PATH fallback now uses `configure_command` (`CREATE_NO_WINDOW`) so no console window flashes on `adb --version` probes
 - **Mutex unwraps (BUG-23)** - replaced all 7 `lock().unwrap()` calls in `lib.rs` with `lock().map_err(|_| "Lock error")?`
-- **AudioConfig silent errors (BUG-24)** - backend errors from `set_scrcpy_mixer_output_device` and `set_scrcpy_app_volume` no longer log to `console.error`; they are silently caught since routing is applied at stream start
-- **Volume/mute at stream start (BUG-25)** - `AudioConfig.tsx` now applies current volume/mute via `invoke` whenever `isRunning` transitions to `true`
+- **AudioConfig errors (BUG-24)** - output-device routing is only requested while a stream is running (it is applied at stream start otherwise); real failures are now reported in the log console instead of `console.error`
+- **Volume/mute at stream start (BUG-25)** - `AudioConfig.tsx` applies the saved volume/mute when the stream starts, retrying for up to 10 s until scrcpy has opened its audio session (the single call made previously always ran too early and failed)
 - **Windows Default option (BUG-26)** - removed `devs[0]` auto-assignment so the "Windows Default" `<option value="">` is reachable when no device is selected
+- **Aspect ratio enforcement (M-12)** - `Resized` event handler restored in `.run()` match to enforce 2:1 window aspect ratio on resize (was accidentally removed during duplicate handler cleanup); it now skips minimised, maximised and fullscreen windows instead of fighting them
+- **Virtual mic creation** - the "Create" button sent `mic_name` instead of the camelCase `micName` Tauri expects, so it always failed silently
+- **UI freezes** - commands that spawn processes (`adb`, `scrcpy --version`), enumerate COM devices, or start/stop the stream are now `async` and run on the blocking pool; as synchronous commands they ran on the main thread (`preview_command` spawned `scrcpy --version` on every option change)
+- **Stream start race** - the "already running" check and the spawn now happen under one lock, so two quick starts cannot launch two scrcpy processes; a virtual mic is created *before* scrcpy spawns and torn down again if the spawn fails
+- **Cleanup on scrcpy exit** - when scrcpy exits on its own, the routing registry keys are removed and the SAR transport is stopped, same as a manual Stop; the exit status is logged
+- **Keyevent command injection** - `send_device_keyevent_managed` only accepts the named actions, numeric key codes or `KEYCODE_*` names (arguments to `adb shell` are joined into a device-side shell command line)
+- **PROPVARIANT leak** - audio endpoint names read via `IPropertyStore::GetValue` are now freed with `PropVariantClear`; device listing and name resolution share one helper so they always use the same names
+- **SAR transport panic** - an out-of-range cursor in the shared register file (e.g. during a client reconnect) is now skipped, as upstream `SarClient::tick()` does, instead of panicking the transport thread; `SetEvent` runs while holding the handle lock so a handle cannot be closed mid-signal
+- **scrcpy update** - the new release is downloaded *before* the existing managed copy is deleted, so a failed download no longer leaves the user without scrcpy
+- **adb settings files** - saving an alias or the last wireless device creates the settings directory if needed (failed when adb came from PATH); `--list-encoders` failures are reported as errors instead of being listed as encoders; battery health `1`/`6` map to Unknown/Failure
+- **Startup scrcpy detection** - scrcpy is re-detected after the auto-download finishes and when the custom path changes (the header showed "not found" after a successful first-run download); the badge now reads "No scrcpy" instead of "DL..."
+- **Battery polling** - only queried for a detected, online device instead of on every keystroke in the IP field
+- **Tray quick connect** - ignored while a stream is already running
 
 ### Changed
 - **Version alignment (DISC-01)** - all manifests bumped to `2.1.0`: `package.json`, `Cargo.toml`, `tauri.conf.json`
@@ -55,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - DeviceSelector invalid ConnectionType "serial" replaced with "wireless"
 
 ### Changed
-- scrcpy command now uses --no-video (not --no-window) when video is disabled
+- scrcpy command uses --no-window when video is disabled (scrcpy then disables video forwarding itself; see M-17)
 - Header layout refactored - CommandPreview merged into header, Run CMD/Stop next to title
 - Aspect ratio configurable via ASPECT_NUM/ASPECT_DEN variables
 - React upgraded to stable 19.x (from canary prerelease)

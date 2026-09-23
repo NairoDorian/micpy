@@ -80,7 +80,7 @@ export const Header: React.FC<HeaderProps> = ({
           {!scrcpyInfo?.available && !isDownloading && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '8px', color: '#ffaa00', backgroundColor: 'rgba(255,170,0,0.06)', padding: '1px 5px', border: '1px solid rgba(255,170,0,0.15)' }} role="alert" aria-label="scrcpy not detected">
               <AlertCircle size={8} aria-hidden="true" />
-              <span>DL...</span>
+              <span>No scrcpy</span>
             </div>
           )}
 

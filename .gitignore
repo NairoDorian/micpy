@@ -13,3 +13,5 @@ stdin
 stdout
 *.csv
 last_wireless_device.txt
+# Reference clones of upstream repos (see docs/EXTERNAL_REPOS_REFERENCE.md)
+third_party/

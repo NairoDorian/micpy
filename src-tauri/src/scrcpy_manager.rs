@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const SCRCPY_DIR: &str = "scrcpy";
@@ -21,7 +21,7 @@ fn managed_dir() -> Option<PathBuf> {
     Some(dirs::data_local_dir()?.join("micpy").join(SCRCPY_DIR))
 }
 
-fn scrcpy_exe_in(dir: &PathBuf) -> PathBuf {
+fn scrcpy_exe_in(dir: &Path) -> PathBuf {
     dir.join("scrcpy.exe")
 }
 
@@ -105,43 +105,38 @@ pub fn find_scrcpy() -> ManagedScrcpyStatus {
 }
 
 pub fn get_target_dir() -> Option<PathBuf> {
-    portable_dir().filter(|d| crate::utils::is_writable(d)).or_else(managed_dir)
+    portable_dir().filter(crate::utils::is_writable).or_else(managed_dir)
 }
 
 pub fn ensure_scrcpy() -> Result<ManagedScrcpyStatus, String> {
     let current = find_scrcpy();
 
-    // If we already have a managed copy, check the latest GitHub release.
-    if current.ready && current.is_managed {
-        let latest = fetch_latest_release().ok();
-        if let Some(release) = latest {
-            let curr_ver = parse_version(&current.version);
-            let latest_ver = parse_version(&release.tag_name);
-            if curr_ver >= latest_ver {
-                return Ok(current);
-            }
-        } else {
-            return Ok(current);
+    // If we already have a managed copy, only update when a newer release exists.
+    // Being offline (or rate-limited) keeps the working copy.
+    let release = if current.ready && current.is_managed {
+        match fetch_latest_release() {
+            Ok(release) if parse_version(&current.version) < parse_version(&release.tag_name) => release,
+            _ => return Ok(current),
         }
-    }
+    } else {
+        fetch_latest_release()?
+    };
 
-    let release = fetch_latest_release()?;
     let asset = find_win64_asset(&release).ok_or_else(|| format!("No Windows 64-bit zip found in release {}", release.tag_name))?;
-        let target_dir = get_target_dir().ok_or("Failed to determine target directory")?;
+    let target_dir = get_target_dir().ok_or("Failed to determine target directory")?;
 
-    let exe_path = scrcpy_exe_in(&target_dir);
-    if exe_path.exists() {
-        crate::utils::remove_all(&target_dir)?;
-    }
-
-    std::fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create directory {:?}: {}", target_dir, e))?;
-
-    let zip_name = &asset.name;
     let staging_dir = std::env::temp_dir().join("micpy");
     std::fs::create_dir_all(&staging_dir).map_err(|e| format!("Failed to create staging directory {:?}: {}", staging_dir, e))?;
-    let zip_path = staging_dir.join(zip_name);
+    let zip_path = staging_dir.join(&asset.name);
 
+    // Download before touching the existing install so a failed download
+    // does not leave the user without a working scrcpy.
     crate::utils::download_file(&asset.browser_download_url, &zip_path)?;
+
+    if scrcpy_exe_in(&target_dir).exists() {
+        crate::utils::remove_all(&target_dir)?;
+    }
+    std::fs::create_dir_all(&target_dir).map_err(|e| format!("Failed to create directory {:?}: {}", target_dir, e))?;
     crate::utils::extract_zip(&zip_path, &target_dir, 1)?;
     std::fs::remove_file(&zip_path).map_err(|e| format!("Failed to remove staging zip {:?}: {}", zip_path, e))?;
 

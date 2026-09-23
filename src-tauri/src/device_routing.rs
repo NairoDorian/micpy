@@ -14,11 +14,13 @@ use std::ptr;
 
 use windows::Win32::Media::Audio::{
     eRender, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
-    MMDeviceEnumerator, DEVICE_STATE_ACTIVE, EDataFlow,
+    MMDeviceEnumerator, DEVICE_STATE, DEVICE_STATE_ACTIVE, EDataFlow,
 };
+use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, CoTaskMemFree, STGM_READ};
-use windows::Win32::System::Variant::VARENUM;
+use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::Foundation::PROPERTYKEY;
+use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use windows::core::GUID;
 use crate::com::ComApartment;
 
@@ -46,7 +48,10 @@ const DEVINTERFACE_AUDIO_RENDER: &str = "{e6327cad-dcec-4949-ae8a-991e976a79d2}"
 // Registry path where Windows stores per-application audio endpoint overrides.
 // scrcpy_0 and scrcpy_1 subkeys each hold the SWD path to route the process.
 const REG_DEFAULT_ENDPOINT: &str = "Software\\Microsoft\\Multimedia\\Audio\\DefaultEndpoint";
-const PKEY_FMTID: &str = "a45c254e-df1c-4efd-8020-67d146a850e0";
+/// `PKEY_Device_FriendlyName` (pid 14) and `PKEY_Device_DeviceDesc` (pid 2) share this FMTID.
+const PKEY_DEVICE_FMTID: GUID = GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0);
+const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY { fmtid: PKEY_DEVICE_FMTID, pid: 14 };
+const PKEY_DEVICE_DEVICE_DESC: PROPERTYKEY = PROPERTYKEY { fmtid: PKEY_DEVICE_FMTID, pid: 2 };
 
 /// Routes scrcpy's audio output to the named device or resets to default.
 ///
@@ -78,32 +83,20 @@ pub fn route_scrcpy_audio(pid: u32, proc_path: &str, device_name: &str) -> Resul
     Ok(format!("Assigned scrcpy output device to '{}'", device_name))
 }
 
-/// Enumerates all active render audio endpoints via `IMMDeviceEnumerator` COM.
+/// Resolves a render endpoint display name (as returned by [`list_endpoint_names`])
+/// to its SWD device-interface path.
 ///
 /// Uses tiered matching (exact > prefix). Returns an error when the match
 /// is ambiguous (multiple endpoints share the same prefix).
-fn resolve_device_swd(device_name: &str) -> Result<String, String> {
+pub(crate) fn resolve_device_swd(device_name: &str) -> Result<String, String> {
     if device_name.trim().is_empty() {
         return Err("device name cannot be empty".to_string());
     }
 
-    let enumerator: IMMDeviceEnumerator = unsafe {
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-            .map_err(|e| format!("MMDeviceEnumerator: {}", e))?
-    };
-
-    let collection: IMMDeviceCollection = unsafe {
-        enumerator.EnumAudioEndpoints(EDataFlow(eRender.0), DEVICE_STATE_ACTIVE)
-            .map_err(|e| format!("EnumAudioEndpoints: {}", e))?
-    };
-
+    let collection = enumerate_endpoints(eRender, DEVICE_STATE_ACTIVE)?;
     let count: u32 = unsafe {
         collection.GetCount().map_err(|e| format!("GetCount: {}", e))?
     };
-
-    let fmtid = GUID::try_from(PKEY_FMTID).unwrap();
-    let key_name = PROPERTYKEY { fmtid, pid: 14 };
-    let key_desc = PROPERTYKEY { fmtid, pid: 2 };
 
     let mut prefix_candidates: Vec<(String, String)> = Vec::new();
 
@@ -113,53 +106,16 @@ fn resolve_device_swd(device_name: &str) -> Result<String, String> {
             Err(_) => continue,
         };
 
-        let store = match unsafe { device.OpenPropertyStore(STGM_READ) } {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        let mut ep_name = String::new();
-        if let Ok(pv) = unsafe { store.GetValue(&key_name as *const PROPERTYKEY) } {
-            let vt = unsafe { pv.Anonymous.Anonymous.vt };
-            if vt == VARENUM(31) {
-                let s = unsafe { pv.Anonymous.Anonymous.Anonymous.pwszVal.to_string().unwrap_or_default() };
-                if !s.is_empty() { ep_name = s; }
-            }
-        }
-
-        let mut dev_desc = String::new();
-        if let Ok(pv) = unsafe { store.GetValue(&key_desc as *const PROPERTYKEY) } {
-            let vt = unsafe { pv.Anonymous.Anonymous.vt };
-            if vt == VARENUM(31) {
-                let s = unsafe { pv.Anonymous.Anonymous.Anonymous.pwszVal.to_string().unwrap_or_default() };
-                if !s.is_empty() { dev_desc = s; }
-            }
-        }
-
-        let display_name = if !dev_desc.is_empty() && dev_desc != ep_name {
-            format!("{} ({})", ep_name, dev_desc)
-        } else {
-            ep_name.clone()
-        };
-
-        if display_name.is_empty() {
+        let Some(display_name) = endpoint_display_name(&device) else {
             continue;
+        };
+
+        if display_name == device_name {
+            return Ok(swd_path_for(&endpoint_id(&device)?));
         }
 
-        if display_name == device_name || ep_name == device_name {
-            let ep_id = unsafe { device.GetId().map_err(|e| format!("GetId: {}", e))? };
-            let id_str = unsafe { ep_id.to_string().map_err(|e| format!("PWSTR: {}", e))? };
-            unsafe { CoTaskMemFree(Some(ep_id.0 as *mut _)); }
-            return Ok(format!("\\\\?\\SWD#MMDEVAPI#{}#{}", id_str, DEVINTERFACE_AUDIO_RENDER));
-        }
-
-        let is_prefix = (!display_name.is_empty() && display_name.starts_with(device_name))
-            || (!ep_name.is_empty() && ep_name.starts_with(device_name));
-        if is_prefix {
-            let ep_id = unsafe { device.GetId().map_err(|e| format!("GetId: {}", e))? };
-            let id_str = unsafe { ep_id.to_string().map_err(|e| format!("PWSTR: {}", e))? };
-            unsafe { CoTaskMemFree(Some(ep_id.0 as *mut _)); }
-            prefix_candidates.push((display_name, id_str));
+        if display_name.starts_with(device_name) {
+            prefix_candidates.push((display_name, endpoint_id(&device)?));
         }
     }
 
@@ -173,10 +129,73 @@ fn resolve_device_swd(device_name: &str) -> Result<String, String> {
     }
 
     if let Some((_, id_str)) = prefix_candidates.into_iter().next() {
-        return Ok(format!("\\\\?\\SWD#MMDEVAPI#{}#{}", id_str, DEVINTERFACE_AUDIO_RENDER));
+        return Ok(swd_path_for(&id_str));
     }
 
     Err(format!("Audio device '{}' not found", device_name))
+}
+
+/// Lists the display names of audio endpoints for `flow` matching `state_mask`,
+/// deduplicated, in enumeration order. These are the same names
+/// [`resolve_device_swd`] matches against. The caller must have COM initialised.
+pub(crate) fn list_endpoint_names(flow: EDataFlow, state_mask: DEVICE_STATE) -> Result<Vec<String>, String> {
+    let collection = enumerate_endpoints(flow, state_mask)?;
+    let count = unsafe { collection.GetCount() }.map_err(|e| format!("GetCount: {}", e))?;
+
+    let mut names = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for i in 0..count {
+        let device = unsafe { collection.Item(i) }.map_err(|e| format!("Item({}): {}", i, e))?;
+        if let Some(name) = endpoint_display_name(&device) {
+            if seen.insert(name.clone()) {
+                names.push(name);
+            }
+        }
+    }
+    Ok(names)
+}
+
+fn enumerate_endpoints(flow: EDataFlow, state_mask: DEVICE_STATE) -> Result<IMMDeviceCollection, String> {
+    let enumerator: IMMDeviceEnumerator = unsafe {
+        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            .map_err(|e| format!("MMDeviceEnumerator: {}", e))?
+    };
+    unsafe { enumerator.EnumAudioEndpoints(flow, state_mask) }
+        .map_err(|e| format!("EnumAudioEndpoints: {}", e))
+}
+
+/// The endpoint's friendly name (e.g. "Speakers (Realtek(R) Audio)"), falling
+/// back to its device description when no friendly name is set.
+fn endpoint_display_name(device: &IMMDevice) -> Option<String> {
+    let store = unsafe { device.OpenPropertyStore(STGM_READ) }.ok()?;
+    read_string_property(&store, &PKEY_DEVICE_FRIENDLY_NAME)
+        .or_else(|| read_string_property(&store, &PKEY_DEVICE_DEVICE_DESC))
+}
+
+/// Reads a `VT_LPWSTR` property. The PROPVARIANT is cleared afterwards because
+/// windows-rs does not implement `Drop` for it (the string would otherwise leak).
+fn read_string_property(store: &IPropertyStore, key: &PROPERTYKEY) -> Option<String> {
+    let mut pv = unsafe { store.GetValue(key) }.ok()?;
+    let value = unsafe {
+        if pv.Anonymous.Anonymous.vt == VT_LPWSTR {
+            pv.Anonymous.Anonymous.Anonymous.pwszVal.to_string().ok()
+        } else {
+            None
+        }
+    };
+    let _ = unsafe { PropVariantClear(&mut pv) };
+    value.filter(|s| !s.is_empty())
+}
+
+fn endpoint_id(device: &IMMDevice) -> Result<String, String> {
+    let ep_id = unsafe { device.GetId() }.map_err(|e| format!("GetId: {}", e))?;
+    let id_str = unsafe { ep_id.to_string() }.map_err(|e| format!("PWSTR: {}", e));
+    unsafe { CoTaskMemFree(Some(ep_id.0 as *const _)); }
+    id_str
+}
+
+fn swd_path_for(endpoint_id: &str) -> String {
+    format!("\\\\?\\SWD#MMDEVAPI#{}#{}", endpoint_id, DEVINTERFACE_AUDIO_RENDER)
 }
 
 /// Writes per-app audio routing to `HKCU\...\DefaultEndpoint\scrcpy_0` and `scrcpy_1`.

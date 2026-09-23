@@ -20,16 +20,25 @@ import './App.css';
 const MIN_WIDTH = 720;
 const MIN_HEIGHT = 360;
 const DEFAULT_OPTIONS: ScrcpyOptions = {
-  connection_type: 'usb',
+  connection_type: 'wireless',
   device_target: '',
   no_window: true,
-  audio_buffer: 10,
+  audio_buffer: 50,
   audio_bit_rate: 128000,
   audio_output_buffer: 10,
   audio_codec: 'raw',
   audio_source: 'mic',
   scrcpy_path: '',
   extra_args: '',
+  output_device: undefined,
+  virtual_mic_name: undefined,
+  volume: 100,
+  mute: false,
+  stay_awake: false,
+  turn_screen_off: false,
+  audio_dup: false,
+  require_audio: true,
+  record_file: '',
 };
 
 const loadSavedOptions = (): ScrcpyOptions => {
@@ -86,7 +95,6 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     checkManagedScrcpy();
-    fetchScrcpyInfo();
     fetchAdbDevices();
     checkStreamStatus();
 
@@ -96,11 +104,19 @@ export const App: React.FC = () => {
         const lastDevice = await invoke<string | null>('get_last_wireless_device');
         if (lastDevice) {
           addLog('info', `Auto-connecting to last wireless device: ${lastDevice}...`);
-          await invoke<string>('connect_adb_wireless_managed', { ipPort: lastDevice });
-          await fetchAdbDevices();
+          setOptions((prev) => ({
+            ...prev,
+            device_target: prev.device_target || lastDevice,
+          }));
+          try {
+            await invoke<string>('connect_adb_wireless_managed', { ipPort: lastDevice });
+          } catch (e) {
+            addLog('stderr', `Auto-connect to ${lastDevice} failed: ${e}`);
+          }
         }
+        await fetchAdbDevices();
       } catch (e) {
-        console.error('Auto-connect failed:', e);
+        addLog('stderr', `adb setup failed: ${e}`);
       }
     })();
 
@@ -127,23 +143,31 @@ export const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-   useEffect(() => {
-     const t = setTimeout(() => {
-       invoke<string>('preview_command', { options })
-         .then(setCommandPreview)
-         .catch(() => setCommandPreview('Preview unavailable'));
-     }, 150);
-     return () => clearTimeout(t);
-   }, [options]);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      invoke<string>('preview_command', { options })
+        .then(setCommandPreview)
+        .catch(() => setCommandPreview('Preview unavailable'));
+    }, 150);
+    return () => clearTimeout(t);
+  }, [options]);
 
-  const fetchScrcpyInfo = async () => {
-    try {
-      const info = await invoke<ScrcpyInfo>('detect_scrcpy', { customPath: options.scrcpy_path || null });
-      setScrcpyInfo(info);
-    } catch (e: any) {
-      setScrcpyInfo({ available: false, path: options.scrcpy_path || 'scrcpy', version: String(e) });
-    }
-  };
+  // (Re-)detect scrcpy on mount, when the custom path changes, and once the
+  // managed copy finishes downloading (managedStatus updates).
+  const scrcpyPath = options.scrcpy_path || '';
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      let info: ScrcpyInfo;
+      try {
+        info = await invoke<ScrcpyInfo>('detect_scrcpy', { customPath: scrcpyPath || null });
+      } catch (e) {
+        info = { available: false, path: scrcpyPath || 'scrcpy', version: String(e) };
+      }
+      if (!cancelled) setScrcpyInfo(info);
+    }, 400);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [scrcpyPath, managedStatus]);
 
   const fetchAdbDevices = async () => {
     setIsLoadingAdb(true);
@@ -151,6 +175,26 @@ export const App: React.FC = () => {
       const list = await invoke<AdbDevice[]>('list_adb_devices_managed');
       setAdbDevices(list);
       addLog('info', `Found ${list.length} active ADB device(s).`);
+
+      const wirelessDev = list.find((d) => /^\d{1,3}(\.\d{1,3}){3}:\d+$/.test(d.serial));
+      if (wirelessDev) {
+        invoke('save_last_wireless_device', { device: wirelessDev.serial }).catch(() => {});
+        setOptions((prev) => {
+          if (!prev.device_target || !list.some((d) => d.serial === prev.device_target)) {
+            return { ...prev, connection_type: 'wireless', device_target: wirelessDev.serial };
+          }
+          return prev;
+        });
+      } else if (list.length > 0) {
+        setOptions((prev) => {
+          if (!prev.device_target || !list.some((d) => d.serial === prev.device_target)) {
+            const first = list[0];
+            const isWireless = /^\d{1,3}(\.\d{1,3}){3}:\d+$/.test(first.serial);
+            return { ...prev, connection_type: isWireless ? 'wireless' : 'usb', device_target: first.serial };
+          }
+          return prev;
+        });
+      }
     } catch (e: any) {
       addLog('stderr', `ADB list error: ${e}`);
     } finally {
@@ -178,8 +222,62 @@ export const App: React.FC = () => {
       const res = await invoke<string>('connect_adb_wireless_managed', { ipPort });
       addLog('info', `ADB Connect Result: ${res}`);
       await invoke<void>('save_last_wireless_device', { device: ipPort });
+      setOptions((prev) => ({ ...prev, connection_type: 'wireless', device_target: ipPort }));
       await fetchAdbDevices();
     } catch (e: any) { addLog('stderr', `ADB connect failed: ${e}`); }
+  };
+
+  const handleSwitchToWireless = async (serial: string) => {
+    addLog('info', `Switching device ${serial} to wireless mode (escrcpy pattern)...`);
+    try {
+      const res = await invoke<string>('switch_to_wireless_managed', { serial, port: null });
+      addLog('info', `Wireless mode activated: ${res}`);
+      const match = res.match(/(\d{1,3}(?:\.\d{1,3}){3}:\d+)/);
+      const target = match ? match[1] : res.split(':')[0] + ':5555';
+      setOptions((prev) => ({ ...prev, connection_type: 'wireless', device_target: target }));
+      await fetchAdbDevices();
+    } catch (e: any) {
+      addLog('stderr', `Switch to wireless failed: ${e}`);
+    }
+  };
+
+  const handleDisconnectWireless = async (target: string) => {
+    addLog('info', `Disconnecting ADB wireless device ${target}...`);
+    try {
+      const res = await invoke<string>('disconnect_adb_wireless_managed', { target });
+      addLog('info', res);
+      setOptions((prev) => {
+        if (prev.device_target === target) {
+          return { ...prev, device_target: '' };
+        }
+        return prev;
+      });
+      await fetchAdbDevices();
+    } catch (e: any) {
+      addLog('stderr', `ADB disconnect failed: ${e}`);
+    }
+  };
+
+  const handlePairWireless = async (ipPort: string, code: string) => {
+    addLog('info', `Pairing ADB device at ${ipPort}...`);
+    try {
+      const res = await invoke<string>('pair_adb_device_managed', { ipPort, code });
+      addLog('info', `Pairing result: ${res}`);
+      const host = ipPort.split(':')[0];
+      if (host) {
+        const defaultTarget = `${host}:5555`;
+        addLog('info', `Connecting to paired host ${defaultTarget}...`);
+        try {
+          await invoke<string>('connect_adb_wireless_managed', { ipPort: defaultTarget });
+          setOptions((prev) => ({ ...prev, connection_type: 'wireless', device_target: defaultTarget }));
+        } catch (connErr) {
+          addLog('info', `Paired successfully. Enter connection port to connect: ${connErr}`);
+        }
+      }
+      await fetchAdbDevices();
+    } catch (e: any) {
+      addLog('stderr', `Pairing failed: ${e}`);
+    }
   };
 
   const handleStartStream = async (opts: ScrcpyOptions) => {
@@ -225,10 +323,17 @@ export const App: React.FC = () => {
 
   const handleClearLogs = () => setLogs([]);
 
+  const handleError = useCallback((msg: string) => addLog('stderr', msg), [addLog]);
+
+  // Tray actions read the latest state through refs (the listener is registered once).
   const handleStartRef = useRef<() => void>(() => {});
-  const handleStopRef = useRef(handleStopStream);
-  useEffect(() => { handleStartRef.current = () => handleStartStream(options); });
-  useEffect(() => { handleStopRef.current = handleStopStream; });
+  const handleStopRef = useRef<() => void>(() => {});
+  handleStartRef.current = () => {
+    if (!isRunning && !isLoadingStream) handleStartStream(options);
+  };
+  handleStopRef.current = () => {
+    if (isRunning && !isLoadingStream) handleStopStream();
+  };
 
   return (
     <ErrorBoundary>
@@ -257,12 +362,18 @@ export const App: React.FC = () => {
             adbDevices={adbDevices}
             onRefreshAdb={fetchAdbDevices}
             onConnectWireless={handleConnectWireless}
+            onSwitchToWireless={handleSwitchToWireless}
+            onDisconnectWireless={handleDisconnectWireless}
+            onPairWireless={handlePairWireless}
             isLoadingAdb={isLoadingAdb}
+            scrcpyPath={options.scrcpy_path || ''}
+            onError={handleError}
           />
           <AudioConfig
             options={options}
             onChangeOption={handleOptionChange}
             isRunning={isRunning}
+            onError={handleError}
           />
         </div>
 

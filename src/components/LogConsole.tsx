@@ -55,8 +55,24 @@ const LogLine: React.FC<LogLineProps> = React.memo(({ log, onCopyLine }) => {
 
 export const LogConsole: React.FC<LogConsoleProps> = ({ logs, onClearLogs }) => {
   const [filter, setFilter] = React.useState<'all' | 'stdout' | 'stderr' | 'info' | 'error'>('all');
-  const { ref, enabled: autoScroll, setEnabled: setAutoScroll } = useAutoScroll([logs]);
+   const { ref, enabled: autoScroll, setEnabled: setAutoScroll } = useAutoScroll(logs);
   const { copied, copy } = useClipboardWithFeedback(2000);
+
+  const counts = useMemo(() => {
+    const res: Record<'all' | 'stdout' | 'stderr' | 'info' | 'error', number> = {
+      all: logs.length,
+      stdout: 0,
+      stderr: 0,
+      info: 0,
+      error: 0,
+    };
+    for (const log of logs) {
+      if (log.stream in res) {
+        res[log.stream]++;
+      }
+    }
+    return res;
+  }, [logs]);
 
   const filteredLogs = useMemo(
     () => logs.filter((log) => filter === 'all' || log.stream === filter),
@@ -87,7 +103,7 @@ export const LogConsole: React.FC<LogConsoleProps> = ({ logs, onClearLogs }) => 
                 aria-pressed={filter === f}
                 style={{ fontSize: '9px', padding: '1px 5px' }}
               >
-                {f}
+                {f}{counts[f] > 0 ? ` (${counts[f]})` : ''}
               </button>
             ))}
           </div>

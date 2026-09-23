@@ -46,7 +46,7 @@ export interface ScrcpyOptions {
   /** Connection mode — determines the target device flag (`-d`, `-s`, `-e`). */
   connection_type: ConnectionType;
   /** Target device identifier. Format depends on `connection_type`:
-   *  - `wireless` : `IP:PORT` (e.g. `192.168.0.111:5555`) or USB serial
+   *  - `wireless` : `IP:PORT` (e.g. `192.168.1.50:5555`) or USB serial
    *  - `usb`/`single` : optional, usually omitted
    */
   device_target?: string;
@@ -67,10 +67,40 @@ export interface ScrcpyOptions {
    * this device via the WinRT AudioPolicyConfig API + registry policies,
    * leaving other app audio on the default device. */
   output_device?: string;
-  /** Path to a custom scrcpy executable (empty = use system PATH). */
+  /** Optional SAR (SynchronousAudioRouter) virtual microphone name.
+   * When set, the Rust backend creates a virtual microphone input endpoint
+   * with this custom name and routes scrcpy's audio to the corresponding
+   * SAR playback endpoint. Requires the SAR kernel driver to be installed. */
+  virtual_mic_name?: string;
+  /** Path to a custom scrcpy executable (empty = managed copy, then system PATH). */
   scrcpy_path?: string;
   /** Extra CLI arguments appended to the scrcpy command line. */
   extra_args?: string;
+  /** Volume level 0-100 (persisted across sessions). */
+  volume: number;
+  /** Whether audio is muted (persisted across sessions). */
+  mute: boolean;
+  /** Keep device awake while streaming (--stay-awake). */
+  stay_awake?: boolean;
+  /** Turn off device screen while streaming (--turn-screen-off). */
+  turn_screen_off?: boolean;
+  /** Duplicate audio playback to device speaker (--audio-dup). */
+  audio_dup?: boolean;
+  /** Turn off screen when scrcpy stream closes (--power-off-on-close). */
+  power_off_on_close?: boolean;
+  /** Fail immediately if audio forwarding fails (--require-audio). */
+  require_audio?: boolean;
+  /** Direct audio stream recording to a PC file (--record=<file>). */
+  record_file?: string;
+}
+
+/** Real-time battery diagnostic information queried from ADB dumpsys battery. */
+export interface BatteryInfo {
+  level: number;
+  is_charging: boolean;
+  power_source: string;
+  temperature?: number;
+  health: string;
 }
 
 /** A single ADB device discovered via `adb devices`. */
@@ -81,6 +111,10 @@ export interface AdbDevice {
   state: string;
   /** Human-readable device model name. */
   model: string;
+  /** True if this is a TCP/IP network connection (IP:port). */
+  is_wireless?: boolean;
+  /** User custom alias or friendly nickname (e.g. "Podcast Mic"). */
+  alias?: string;
 }
 
 /** Current stream execution status reported from the Rust backend. */
@@ -125,6 +159,16 @@ export interface ManagedScrcpyStatus {
   path: string;
   /** True if from the managed/portable folder. */
   is_managed: boolean;
+}
+
+/** Status of the SAR virtual microphone bridge. */
+export interface VirtualMicStatus {
+  /** Whether a SAR virtual mic transport is currently active. */
+  active: boolean;
+  /** Friendly name of the recording endpoint (the virtual mic), if active. */
+  mic_name?: string;
+  /** Friendly name of the playback endpoint (loopback target), if active. */
+  playback_name?: string;
 }
 
 /** Detection result for the adb binary on the system. */
